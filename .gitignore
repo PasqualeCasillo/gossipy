@@ -4,3 +4,4 @@ __pycache__/
 gossipy/.DS_Store
 venv/
 archive/
+.gossip/
