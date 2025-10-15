@@ -333,3 +333,62 @@ plot_evaluation(
     [[ev for _, ev in report.get_evaluation(False)]], 
     "Overall test results - PENS with Data1.csv"
 )
+
+
+print("\n" + "="*60)
+print(" ANALISI OVERFITTING/UNDERFITTING")
+print("="*60)
+
+# 1. Valuta su TRAINING SET
+train_accuracies = []
+test_accuracies = []
+
+for node_id, node in nodes.items():
+    # Training accuracy (sul dataset locale del nodo)
+    X_train_node, y_train_node = node.data[0]
+    train_eval = node.evaluate((X_train_node, y_train_node))
+    train_accuracies.append(train_eval['accuracy'])
+    
+    # Test accuracy (già calcolata)
+    if node.has_test():
+        test_eval = node.evaluate(node.data[1])
+        test_accuracies.append(test_eval['accuracy'])
+
+# Media
+avg_train_acc = np.mean(train_accuracies)
+avg_test_acc = np.mean(test_accuracies) if test_accuracies else \
+               final_metrics['accuracy']  # Usa test globale
+
+gap = avg_train_acc - avg_test_acc
+
+print(f"\n Metriche:")
+print(f"  Train Accuracy (media nodi): {avg_train_acc:.4f}")
+print(f"  Test Accuracy (globale):     {avg_test_acc:.4f}")
+print(f"  Gap (Train - Test):          {gap:.4f}")
+
+# Diagnosi
+print(f"\n Diagnosi:")
+if gap < 0.02:  # Gap < 2%
+    print(" GOOD FIT: Il modello generalizza bene!")
+elif gap < 0.10:  # Gap 2-10%
+    print("   LEGGERO OVERFITTING: Accettabile ma monitorare")
+elif gap >= 0.10:  # Gap > 10%
+    print("  OVERFITTING: Il modello memorizza il training set!")
+else:
+    print("   UNDERFITTING: Il modello è troppo semplice!")
+
+# Dettagli
+if avg_train_acc < 0.85:
+    print("  Suggerimento: Train accuracy bassa → modello sottopotente")
+    print("     - Aumenta complessità (più layer/neuroni)")
+    print("     - Aumenta local_epochs")
+    print("     - Riduci regolarizzazione (weight_decay)")
+
+if gap > 0.10:
+    print("  Suggerimento: Gap alto → overfitting")
+    print("     - Aumenta dropout (da 0.2 a 0.3-0.4)")
+    print("     - Aumenta weight_decay (da 0.0001 a 0.001)")
+    print("     - Riduci complessità modello")
+    print("     - Aumenta dati per nodo (riduci N_NODES)")
+
+print("="*60 + "\n")
