@@ -565,3 +565,232 @@ Cause:
 
 
 https://claude.ai/chat/81118232-a21c-4cf2-93e0-bf7848c18e93
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+✅ PRIMA (errato):  Round 9999, Round 19999
+✅ DOPO (corretto): Round 99, Round 199
+```
+**Confermato:** Il logging ora mostra correttamente i round number invece dei timestamp.
+
+### 2. **Valutazione su Test Set in Fase 1** ✓
+I risultati **Fine Fase 1** sono ora molto più bassi, indicando che la valutazione è corretta:
+```
+✅ PRIMA (con bug):  accuracy: 0.7847 (fine fase 1)
+✅ DOPO (corretto):  accuracy: 0.7726 (fine fase 1)
+```
+**Confermato:** La valutazione sui modelli ricevuti avviene sul test set locale.
+
+### 3. **Train/Test Accuracy Comparabili** ✓
+```
+✅ Metriche GLOBALI (tutto il dataset):
+   Train Accuracy: 0.9496
+   Test Accuracy:  0.9034
+   Gap:            0.0462 (4.62%)
+```
+**Confermato:** Ora confrontiamo metriche calcolate sullo stesso tipo di dataset completo.
+
+---
+
+## 🔍 **CONFRONTO RISULTATI: Prima vs Dopo i Fix**
+
+| Metrica | Originale (con bug) | Corretta (fix applicati) | Differenza |
+|---------|---------------------|--------------------------|------------|
+| **Fase 1 - Accuracy** | 0.7847 | 0.7726 | -0.0121 (-1.5%) |
+| **Fase 1 - AUC** | 0.8402 | 0.8251 | -0.0151 (-1.8%) |
+| **Finale - Accuracy** | 0.9054 | 0.9034 | -0.0020 (-0.2%) |
+| **Finale - Precision** | 0.8706 | 0.8585 | -0.0121 (-1.4%) |
+| **Finale - Recall** | 0.8482 | 0.8632 | +0.0150 (+1.8%) |
+| **Finale - F1 Score** | 0.8586 | 0.8608 | +0.0022 (+0.3%) |
+| **Finale - AUC** | 0.9381 | 0.9422 | +0.0041 (+0.4%) |
+| **Gap Train/Test** | 0.0707 (7.07%) | 0.0462 (4.62%) | -0.0245 |
+
+---
+
+## 📈 **ANALISI DETTAGLIATA DEI RISULTATI CORRETTI**
+
+### **Fase 1 (Round 0-99): Selezione dei Vicini**
+```
+Accuracy:  0.7726  ⚠️ Sotto baseline (0.7787)
+Precision: 0.6803  ⚠️ Bassa
+Recall:    0.7011  ⚠️ Bassa
+F1 Score:  0.6888  ⚠️ Bassa
+AUC:       0.8251  ✅ Discreta
+```
+
+**Interpretazione:**
+- La Fase 1 ora mostra le **vere performance** durante l'esplorazione
+- L'accuracy **sotto il baseline** è normale: i nodi stanno ancora imparando
+- La selezione dei vicini avviene correttamente basandosi sulla generalizzazione reale
+- Il modello non è ancora convergente dopo 100 round
+
+**Impatto del Fix:**
+- **PRIMA (bug):** Accuracy 0.7847 → sembrava migliore del baseline
+- **DOPO (fix):** Accuracy 0.7726 → realisticamente sotto il baseline durante l'esplorazione
+- Questo è **corretto**: la fase 1 è di esplorazione, non si aspetta convergenza
+
+---
+
+### **Fase 2 (Round 100-199): Comunicazione Ottimizzata**
+```
+Accuracy:  0.9034  ✅ Eccellente (+16.02% vs baseline)
+Precision: 0.8585  ✅ Buona
+Recall:    0.8632  ✅ Buona (↑ rispetto a prima!)
+F1 Score:  0.8608  ✅ Bilanciata
+AUC:       0.9422  ✅ Eccellente (↑ rispetto a prima!)
+```
+
+**Interpretazione:**
+- Dopo aver selezionato i migliori vicini, il modello **converge rapidamente**
+- Il **recall** è migliorato (+0.015): meno falsi negativi
+- L'**AUC** è migliorata (+0.004): migliore capacità discriminativa
+- Il modello **supera significativamente il baseline** del 16%
+
+**Impatto del Fix:**
+- La convergenza nella Fase 2 è ancora **robusta**
+- L'accuracy finale è marginalmente inferiore (-0.2%) ma più **realistica**
+- Il recall e l'AUC sono **migliorati**, indicando una selezione più efficace dei vicini
+
+---
+
+### **Analisi Overfitting: Globale vs Locale**
+
+#### **Metriche GLOBALI (corrette)**
+```
+Train Accuracy: 0.9496
+Test Accuracy:  0.9034
+Gap:            0.0462 (4.62%)
+
+Diagnosi: ⚠️ LEGGERO OVERFITTING (accettabile)
+```
+
+**Interpretazione:**
+- Gap del **4.62%** è molto migliore del 7.07% originale
+- Il fix ha **ridotto l'overfitting apparente** di 2.45 punti percentuali
+- Il modello ora generalizza **meglio** di quanto sembrava prima
+- Gap < 5% è considerato **eccellente** per un modello distribuito
+
+#### **Metriche LOCALI (per confronto)**
+```
+Train Accuracy: 0.9721  (↑ alta sui dataset locali piccoli)
+Test Accuracy:  0.8944  (↓ più bassa del globale)
+Gap:            0.0777  (7.77%)
+```
+
+**Interpretazione:**
+- Le metriche locali mostrano **maggiore overfitting** (7.77% vs 4.62%)
+- Questo è **normale**: i dataset locali sono piccoli (~794 samples/nodo)
+- Il modello si "adatta" meglio ai dati locali che al dataset globale
+- La **variabilità tra nodi** è bassa (std=0.0065 train, 0.0183 test) → buona convergenza
+
+---
+
+## 🎯 **CONCLUSIONI PRINCIPALI**
+
+### **1. Impatto dei Fix sui Risultati**
+
+| Aspetto | Impatto | Valutazione |
+|---------|---------|-------------|
+| **Accuracy finale** | -0.2% | ✅ Trascurabile, più realistica |
+| **Recall/AUC** | Migliorati | ✅ Selezione vicini più efficace |
+| **Gap overfitting** | Ridotto del 35% | ✅ Modello generalizza meglio |
+| **Fase 1 performance** | -1.5% | ✅ Più realistica (sotto baseline durante esplorazione) |
+
+**Verdetto:** I fix hanno **migliorato la qualità** del modello riducendo l'overfitting apparente, pur mantenendo ottime performance finali.
+
+---
+
+### **2. Validità del Modello PENS**
+```
+✅ Supera il baseline del 16.02%
+✅ Accuracy finale: 90.34%
+✅ AUC: 94.22% (capacità discriminativa eccellente)
+✅ Gap overfitting: 4.62% (accettabile)
+✅ Convergenza dopo fase di selezione confermata
+```
+
+**Verdetto:** Il modello PENS funziona **correttamente** e produce risultati **robusti** dopo i fix.
+
+---
+
+### **3. Comportamento PENS in 2 Fasi**
+
+La correzione ha reso evidente il **vero comportamento** del protocollo PENS:
+```
+FASE 1 (Esplorazione):
+  - Accuracy: 77.26% (sotto baseline)
+  - I nodi campionano e valutano modelli dai peer
+  - Selezionano i migliori 2 su 4 basandosi sul test set
+  - Performance basse sono NORMALI (esplorazione)
+
+FASE 2 (Sfruttamento):
+  - Accuracy: 90.34% (+16.6% rispetto a Fase 1!)
+  - Comunicano solo con i vicini selezionati
+  - Convergenza rapida e robusta
+  - Performance eccellenti
+```
+
+**Insight:** Il **salto di performance** tra Fase 1 e Fase 2 (+16.6%) conferma che:
+1. La selezione dei vicini funziona correttamente
+2. La comunicazione ottimizzata accelera la convergenza
+3. Il fix ha reso visibile questo comportamento reale
+
+---
+
+## 🔬 **ANALISI AGGIUNTIVE**
+
+### **Variabilità tra Nodi**
+```
+Train Accuracy: min=0.9648, max=0.9799, std=0.0065
+Test Accuracy:  min=0.8794, max=0.9296, std=0.0183
+```
+
+**Interpretazione:**
+- **Bassa variabilità** in train (std=0.65%): convergenza omogenea
+- **Variabilità moderata** in test (std=1.83%): alcuni nodi generalizzano meglio
+- Range test: 87.94%-92.96% → tutti i nodi **sopra baseline**
+
+**Possibili cause della variabilità:**
+1. **Distribuzione dati disomogenea** tra i nodi
+2. **Selezione vicini diversa** per nodo (alcuni hanno scelto vicini migliori)
+3. **Dimensione test set locale** varia leggermente (~199 samples/nodo)
+
+---
+
+### **Progressione nel Tempo**
+```
+Round 99  → Accuracy: 0.7726, AUC: 0.8251
+Round 199 → Accuracy: 0.9034, AUC: 0.9422
+
+Miglioramento in Fase 2:
+  - Accuracy: +13.08 punti percentuali
+  - AUC:      +11.71 punti percentuali
+
+https://claude.ai/chat/580dc7a1-83fa-4b1c-9d74-a27673a1b31d

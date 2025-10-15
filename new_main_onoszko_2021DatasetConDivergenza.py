@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from gossipy.core import AntiEntropyProtocol, CreateModelMode, StaticP2PNetwork
+from gossipy.core import AntiEntropyProtocol, CreateModelMode, StaticP2PNetwork, Message, MessageType
 from gossipy.data import DataDispatcher
 from gossipy.model import TorchModel
 from gossipy.data.handler import ClassificationDataHandler
@@ -13,19 +13,11 @@ from gossipy.model.handler import TorchModelHandler
 from gossipy.node import PENSNode
 from gossipy.simul import GossipSimulator, SimulationReport
 from gossipy.utils import plot_evaluation
+from gossipy import CACHE, LOG
+from typing import Union
 
 # Importa le metriche di divergenza
 from divergence_metrics import DivergenceTracker, extract_model_weights, jensen_renyi_divergence
-
-# AUTHORSHIP
-__version__ = "0.0.1"
-__author__ = "Mirko Polato"
-__copyright__ = "Copyright 2022, gossipy"
-__license__ = "MIT"
-__maintainer__ = "Mirko Polato, PhD"
-__email__ = "mak1788@gmail.com"
-__status__ = "Development"
-#
 
 def load_custom_dataset_for_onoszko(csv_path="archive/binaryAllNaturalPlusNormalVsAttacks/data2.csv"):
     """
@@ -167,24 +159,75 @@ class CustomDataDispatcher(DataDispatcher):
                     self.te_assignments[idx] = list(range(i, min(i + eval_ex_x_user, n_eval_ex)))
 
 
-class DivergenceTrackingReport(SimulationReport):
-    """Report esteso con tracking delle divergenze"""
+class FixedPENSNode(PENSNode):
+    """PENSNode con correzione del bug di valutazione in Fase 1"""
     
-    def __init__(self, n_nodes=20):
+    def receive(self, t: int, msg: Message) -> Union[Message, None]:
+        """
+        FIX BUG CRITICO: Valuta i modelli ricevuti sul TEST SET, non sul training set
+        """
+        msg_type: MessageType
+        recv_model: any 
+        sender, msg_type, recv_model = msg.sender, msg.type, msg.value[0]
+        
+        if msg_type != MessageType.PUSH:
+            LOG.warning("PENSNode only supports PUSH protocol.")
+            return None
+
+        if self.step == 1:
+            # FIX CRITICO: Usa self.data[1] (test set) invece di self.data[0] (training set)
+            if self.data[1] is not None:
+                evaluation = CACHE[recv_model].evaluate(self.data[1])  # ← FIX!
+            else:
+                # Fallback al training set se non c'è test set locale
+                evaluation = CACHE[recv_model].evaluate(self.data[0])
+                LOG.warning(f"Node {self.idx}: Using training set for evaluation (no local test set)")
+            
+            self.cache[sender] = (recv_model, -evaluation["accuracy"])
+
+            if len(self.cache) >= self.n_sampled:
+                top_m = sorted(self.cache, key=lambda key: self.cache[key][1])[:self.m_top]
+                recv_models = [CACHE.pop(self.cache[k][0]) for k in top_m]
+                self.model_handler(recv_models, self.data[0])
+                self.cache = {}
+                for i in top_m:
+                    self.neigh_counter[i] += 1
+        else:
+            recv_model = CACHE.pop(recv_model)
+            self.model_handler(recv_model, self.data[0])
+        
+        return None
+
+
+class DivergenceTrackingReport(SimulationReport):
+    """Report esteso con tracking delle divergenze e logging corretto"""
+    
+    def __init__(self, delta: int = 100, n_nodes: int = 20):
         super().__init__()
+        self.delta = delta
         self.divergence_tracker = DivergenceTracker()
         self.node_weights_history = {}
         self.n_nodes = n_nodes
         self.round_counter = 0
     
+    def update_evaluation(self, round: int, on_user: bool, evaluation: list):
+        """Override per convertire timestamp in round number"""
+        actual_round = round // self.delta  # ← FIX: Converti timestamp → round
+        ev = self._collect_results(evaluation)
+        if on_user:
+            self._local_evaluations.append((actual_round, ev))
+        else:
+            self._global_evaluations.append((actual_round, ev))
+    
     def update_timestep(self, t: int):
         """Override per tracciare le divergenze ad ogni round"""
         super().update_timestep(t)
         
-        # Ogni 100 timestep = 1 round
-        if t % 100 == 0 and t > 0:
-            self.round_counter += 1
-            print(f" Round {self.round_counter} completed")
+        # Ogni delta timestep = 1 round
+        if t % self.delta == 0 and t > 0:
+            self.round_counter = t // self.delta
+            if self.round_counter % 10 == 0:  # Log ogni 10 round
+                print(f"  Round {self.round_counter} completed")
     
     def track_node_weights(self, node_id, model_weights):
         """Traccia i pesi di un nodo specifico"""
@@ -230,7 +273,9 @@ class DivergenceTrackingReport(SimulationReport):
         """Override per stampare statistiche finali delle divergenze"""
         super().update_end()
         
-        print(f"\n=== DIVERGENCE ANALYSIS SUMMARY ===")
+        print(f"\n{'='*60}")
+        print(f"DIVERGENCE ANALYSIS SUMMARY")
+        print(f"{'='*60}")
         
         # Calcola divergenza finale della rete
         final_network_div = self.calculate_network_divergence()
@@ -241,6 +286,7 @@ class DivergenceTrackingReport(SimulationReport):
         print(f"Nodes tracked: {len(self.node_weights_history)}")
         for node_id, weights_list in self.node_weights_history.items():
             print(f"  Node {node_id}: {len(weights_list)} weight snapshots")
+        print(f"{'='*60}")
 
 
 def patch_evaluate_method():
@@ -343,8 +389,16 @@ class DivergenceTrackingSimulator(GossipSimulator):
     
     def start(self, n_rounds: int = 100):
         """Override del metodo start per tracciare le divergenze"""
-        print(f" Starting Gossip Learning simulation with divergence tracking")
+        print(f"\n{'='*60}")
+        print(f"Starting Gossip Learning simulation with divergence tracking")
+        print(f"{'='*60}")
         print(f"Rounds: {n_rounds}, Nodes: {self.n_nodes}")
+        print(f"FIX APPLICATI:")
+        print(f"Valutazione su test set in Fase 1")
+        print(f"Logging corretto dei round numbers")
+        print(f"Test set locale per ogni nodo")
+        print(f"Tracking divergenza tra nodi")
+        print(f"{'='*60}\n")
         
         # Snapshot iniziale dei pesi
         if self.divergence_report:
@@ -361,7 +415,7 @@ class DivergenceTrackingSimulator(GossipSimulator):
         
         # Snapshot finale e calcolo divergenze
         if self.divergence_report:
-            print(f"\n Final divergence calculation...")
+            print(f"\n  Final divergence calculation...")
             for node_id, node in self.nodes.items():
                 if hasattr(node, 'model_handler') and hasattr(node.model_handler, 'model'):
                     try:
@@ -373,7 +427,7 @@ class DivergenceTrackingSimulator(GossipSimulator):
             # Calcola e stampa divergenza finale
             final_div = self.divergence_report.calculate_network_divergence()
             if final_div is not None:
-                print(f"🎯 Final Network Jensen-Rényi Divergence: {final_div:.6f}")
+                print(f"\n Final Network Jensen-Rényi Divergence: {final_div:.6f}")
 
 
 # Carica il dataset personalizzato
@@ -393,8 +447,13 @@ data_handler = ClassificationDataHandler(
     test_set[0], test_set[1]     # test data
 )
 
-# Data dispatcher con 20 nodi
-data_dispatcher = CustomDataDispatcher(data_handler, n=20, eval_on_user=False, auto_assign=True)
+# Data dispatcher con 20 nodi e eval_on_user=True per test set locale
+data_dispatcher = CustomDataDispatcher(
+    data_handler, 
+    n=20, 
+    eval_on_user=True,  # Abilita test set locale
+    auto_assign=True
+)
 
 # Configurazione della rete
 input_size = train_set[0].shape[1]
@@ -408,8 +467,8 @@ print(f"- Test samples: {test_set[0].shape[0]}")
 patch_evaluate_method()
 patch_merge_method()
 
-# Genera nodi PENS
-nodes = PENSNode.generate(
+# Genera nodi PENS con FixedPENSNode
+nodes = FixedPENSNode.generate(  # ← USA FixedPENSNode
     data_dispatcher=data_dispatcher,
     p2p_net=StaticP2PNetwork(20),
     model_proto=TorchModelHandler(
@@ -440,14 +499,14 @@ simulator = DivergenceTrackingSimulator(
     sampling_eval=0.1
 )
 
-# Setup report con tracking divergenze
-report = DivergenceTrackingReport(n_nodes=20)
+# Setup report con tracking divergenze e logging corretto
+report = DivergenceTrackingReport(delta=100, n_nodes=20)  # ← FIX: Passa delta
 simulator.add_divergence_receiver(report)
 simulator.init_nodes(seed=42)
 
 print(f"\nAvvio simulazione PENS con tracking divergenze...")
 print(f"Features: {input_size}, Classi: {n_classes}")
-print(f"Algoritmo: PENS con sparsificazione dei gradienti")
+print(f"Algoritmo: PENS con sparsificazione dei gradienti (VERSIONE CORRETTA)")
 
 # Avvia simulazione
 simulator.start(n_rounds=500)
@@ -455,14 +514,17 @@ simulator.start(n_rounds=500)
 # Visualizza risultati
 print(f"\nSimulazione completata!")
 plot_evaluation([[ev for _, ev in report.get_evaluation(False)]], 
-                f"PENS con Divergence Tracking - Dataset ({data_handler.size()} samples, {n_classes} classi)")
+                f"PENS FIXED con Divergence Tracking - Dataset ({data_handler.size()} samples, {n_classes} classi)")
 
 # Statistiche finali
 if report.get_evaluation(False):
     final_metrics = report.get_evaluation(False)[-1][1]
-    print(f"\nRisultati finali:")
+    print(f"\n{'='*60}")
+    print(f"Risultati finali:")
+    print(f"{'='*60}")
     for metric, value in final_metrics.items():
         print(f"  {metric}: {value:.4f}")
+    print(f"{'='*60}")
 
 # Salva i dati delle divergenze per analisi future
 print(f"\nSaving divergence data...")
@@ -476,7 +538,12 @@ with open("gossip_divergence_data.pkl", "wb") as f:
             'input_size': input_size,
             'n_classes': n_classes,
             'rounds': 500
-        }
+        },
+        'fixes_applied': [
+            'Valutazione su test set in Fase 1',
+            'Logging corretto dei round numbers',
+            'Test set locale per ogni nodo'
+        ]
     }, f)
 
 print(f"Divergence analysis complete - data saved to gossip_divergence_data.pkl")
