@@ -342,7 +342,7 @@ def run_experiment_with_message_loss(
             data_dispatcher=data_dispatcher,
             delta=100,
             protocol=AntiEntropyProtocol.PUSH,
-            sampling_eval=0.2,
+            sampling_eval=1,
             drop_prob=drop_rate
         )
         
@@ -499,10 +499,10 @@ if __name__ == "__main__":
     
     DROP_RATES = [0.1, 0.2, 0.3, 0.5, 0.7]
     CSV_PATH = 'archive/binaryAllNaturalPlusNormalVsAttacks/data1.csv'
-    N_ROUNDS = 200
-    N_NODES = 5
-    N_SAMPLED = 4
-    M_TOP = 2
+    N_ROUNDS = 400
+    N_NODES = 10
+    N_SAMPLED = 10
+    M_TOP = 3
     STEP1_ROUNDS = 100
     
     print("="*60)

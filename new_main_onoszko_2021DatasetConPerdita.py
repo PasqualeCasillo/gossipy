@@ -5,17 +5,24 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from gossipy.core import AntiEntropyProtocol, CreateModelMode, StaticP2PNetwork, Message, MessageType
+from gossipy.core import AntiEntropyProtocol, CreateModelMode, StaticP2PNetwork
 from gossipy.data import DataDispatcher
 from gossipy.model import TorchModel
 from gossipy.data.handler import ClassificationDataHandler
 from gossipy.model.handler import TorchModelHandler
 from gossipy.node import PENSNode
 from gossipy.simul import GossipSimulator, SimulationReport
-from gossipy import CACHE, LOG
-from typing import Union
 import matplotlib.pyplot as plt
 
+# AUTHORSHIP
+__version__ = "0.0.1"
+__author__ = "Mirko Polato"
+__copyright__ = "Copyright 2022, gossipy"
+__license__ = "MIT"
+__maintainer__ = "Mirko Polato, PhD"
+__email__ = "mak1788@gmail.com"
+__status__ = "Development"
+#
 
 def load_custom_dataset_for_onoszko(csv_path="archive/binaryAllNaturalPlusNormalVsAttacks/data15.csv"):
     """
@@ -52,6 +59,7 @@ def load_custom_dataset_for_onoszko(csv_path="archive/binaryAllNaturalPlusNormal
     # Controlla ancora per infiniti
     if np.any(np.isinf(X.values)):
         print("Errore: valori infiniti rilevati dopo pulizia")
+        # Sostituisci infiniti rimanenti con 0
         X = X.replace([np.inf, -np.inf], 0)
     
     # Encoding delle etichette
@@ -160,68 +168,6 @@ class CustomDataDispatcher(DataDispatcher):
                     self.te_assignments[idx] = list(range(i, min(i + eval_ex_x_user, n_eval_ex)))
 
 
-class FixedPENSNode(PENSNode):
-    """PENSNode con correzione del bug di valutazione in Fase 1"""
-    
-    def receive(self, t: int, msg: Message) -> Union[Message, None]:
-        """
-        FIX BUG CRITICO: Valuta i modelli ricevuti sul TEST SET, non sul training set
-        """
-        msg_type: MessageType
-        recv_model: any 
-        sender, msg_type, recv_model = msg.sender, msg.type, msg.value[0]
-        
-        if msg_type != MessageType.PUSH:
-            LOG.warning("PENSNode only supports PUSH protocol.")
-            return None
-
-        if self.step == 1:
-            # ============================================================
-            # FIX CRITICO: Usa self.data[1] (test set) invece di self.data[0] (training set)
-            # ============================================================
-            if self.data[1] is not None:
-                evaluation = CACHE[recv_model].evaluate(self.data[1])  # ← FIX!
-            else:
-                # Fallback al training set se non c'è test set locale
-                evaluation = CACHE[recv_model].evaluate(self.data[0])
-                LOG.warning(f"Node {self.idx}: Using training set for evaluation (no local test set)")
-            
-            self.cache[sender] = (recv_model, -evaluation["accuracy"])
-
-            if len(self.cache) >= self.n_sampled:
-                top_m = sorted(self.cache, key=lambda key: self.cache[key][1])[:self.m_top]
-                recv_models = [CACHE.pop(self.cache[k][0]) for k in top_m]
-                self.model_handler(recv_models, self.data[0])
-                self.cache = {}
-                for i in top_m:
-                    self.neigh_counter[i] += 1
-        else:
-            recv_model = CACHE.pop(recv_model)
-            self.model_handler(recv_model, self.data[0])
-        
-        return None
-
-
-# ============================================================================
-# FIX IMPRECISIONE #1: SimulationReport con logging corretto dei round
-# ============================================================================
-class FixedSimulationReport(SimulationReport):
-    """SimulationReport con logging corretto del numero di round"""
-    
-    def __init__(self, delta: int):
-        super().__init__()
-        self.delta = delta
-    
-    def update_evaluation(self, round: int, on_user: bool, evaluation: list):
-        """Override per convertire timestamp in round number"""
-        actual_round = round // self.delta  # Converti timestamp in round number
-        ev = self._collect_results(evaluation)
-        if on_user:
-            self._local_evaluations.append((actual_round, ev))
-        else:
-            self._global_evaluations.append((actual_round, ev))
-
-
 # Patch per gestire il bug dell'AUC (simile a quello di Hegedus)
 def patch_evaluate_method():
     """Patch per risolvere il bug dell'AUC score nella libreria gossipy"""
@@ -319,7 +265,7 @@ def patch_merge_method():
 
 def run_experiment_with_message_loss(drop_rates, n_rounds=500, n_nodes=20):
     """
-    Esegue esperimenti con diversi tassi di perdita di messaggi (VERSIONE CORRETTA)
+    Esegue esperimenti con diversi tassi di perdita di messaggi
     
     Parameters:
     -----------
@@ -365,14 +311,6 @@ def run_experiment_with_message_loss(drop_rates, n_rounds=500, n_nodes=20):
     print(f"- Train samples: {train_set[0].shape[0]}")
     print(f"- Test samples: {test_set[0].shape[0]}")
     
-    print(f"\n{'='*60}")
-    print(f"FIX APPLICATI IN QUESTA VERSIONE:")
-    print(f"{'='*60}")
-    print(f"✓ Valutazione su test set in Fase 1 PENS")
-    print(f"✓ Logging corretto dei round numbers")
-    print(f"✓ Test set locale per ogni nodo")
-    print(f"{'='*60}\n")
-    
     results = {}
     
     for drop_rate in drop_rates:
@@ -380,16 +318,11 @@ def run_experiment_with_message_loss(drop_rates, n_rounds=500, n_nodes=20):
         print(f"Esperimento con drop_rate = {drop_rate:.2f}")
         print(f"{'='*60}")
         
-        # Data dispatcher con n_nodes nodi e eval_on_user=True
-        data_dispatcher = CustomDataDispatcher(
-            data_handler, 
-            n=n_nodes, 
-            eval_on_user=True,  # ← FIX: Abilita test set locale
-            auto_assign=True
-        )
+        # Data dispatcher con n_nodes nodi
+        data_dispatcher = CustomDataDispatcher(data_handler, n=n_nodes, eval_on_user=False, auto_assign=True)
         
-        # Genera nodi PENS con FixedPENSNode
-        nodes = FixedPENSNode.generate(  # ← USA FixedPENSNode
+        # Genera nodi PENS
+        nodes = PENSNode.generate(
             data_dispatcher=data_dispatcher,
             p2p_net=StaticP2PNetwork(n_nodes),
             model_proto=TorchModelHandler(
@@ -421,12 +354,12 @@ def run_experiment_with_message_loss(drop_rates, n_rounds=500, n_nodes=20):
             drop_prob=drop_rate  # PARAMETRO CHIAVE: tasso di perdita messaggi
         )
         
-        # Setup report con logging corretto
-        report = FixedSimulationReport(delta=100)  # ← USA FixedSimulationReport
+        # Setup report e avvio
+        report = SimulationReport()
         simulator.add_receiver(report)
         simulator.init_nodes(seed=42)
         
-        print(f"Avvio simulazione PENS CORRETTA con drop_rate={drop_rate:.2f}...")
+        print(f"Avvio simulazione PENS con drop_rate={drop_rate:.2f}...")
         simulator.start(n_rounds=n_rounds)
         
         # Salva risultati
@@ -462,8 +395,7 @@ def plot_results(results):
     
     # Crea figura con subplot
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-    fig.suptitle('Impatto della perdita di messaggi sull\'addestramento PENS (VERSIONE CORRETTA)', 
-                 fontsize=16, fontweight='bold')
+    fig.suptitle('Impatto della perdita di messaggi sull\'addestramento PENS', fontsize=16)
     
     # Colori per diversi drop rates
     colors = plt.cm.viridis(np.linspace(0, 1, len(results)))
@@ -519,22 +451,232 @@ def plot_results(results):
     ax4.set_title('F1 Score Finale vs Tasso di Perdita')
     ax4.grid(True, alpha=0.3)
     
-    # Aggiungi nota sui fix
-    fig.text(0.99, 0.01, 'Versione corretta con fix: Valutazione test set | Round logging | Test locale', 
-             fontsize=9, ha='right', style='italic', alpha=0.7)
-    
     plt.tight_layout()
     plt.show()
 
+
+
+def plot_results_improved(results):
+    """
+    Visualizzazione migliorata dei risultati degli esperimenti
+    
+    Parameters:
+    -----------
+    results: dict
+        Dizionario con i risultati per ogni tasso di perdita
+    """
+    
+    # Stile professionale
+    plt.style.use('seaborn-v0_8-darkgrid')
+    
+    # Crea figura con subplot
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle('Impatto della Perdita di Messaggi sull\'Algoritmo PENS per il Rilevamento di Intrusioni', 
+                 fontsize=18, fontweight='bold', y=1.02)
+    
+    # Colori personalizzati per ogni drop rate
+    colors = {
+        0.0: '#2E7D32',  # Verde scuro
+        0.1: '#43A047',  # Verde
+        0.2: '#66BB6A',  # Verde chiaro
+        0.3: '#FFA726',  # Arancione
+        0.5: '#EF5350',  # Rosso chiaro
+        0.7: '#C62828'   # Rosso scuro
+    }
+    
+    # Plot 1: Evoluzione accuracy nel tempo (con smoothing)
+    ax1 = axes[0, 0]
+    for drop_rate, data in results.items():
+        if data['evaluations']:
+            rounds = [r for r, _ in data['evaluations']]
+            accuracies = [metrics['accuracy'] for _, metrics in data['evaluations']]
+            
+            # Applica smoothing con media mobile
+            window_size = 5
+            if len(accuracies) > window_size:
+                from scipy.ndimage import uniform_filter1d
+                smoothed = uniform_filter1d(accuracies, size=window_size, mode='nearest')
+                ax1.plot(rounds, smoothed, label=f'Drop Rate = {drop_rate:.1%}', 
+                        color=colors[drop_rate], linewidth=2.5, alpha=0.9)
+                # Aggiungi area di confidenza
+                ax1.fill_between(rounds, accuracies, smoothed, 
+                                alpha=0.1, color=colors[drop_rate])
+            else:
+                ax1.plot(rounds, accuracies, label=f'Drop Rate = {drop_rate:.1%}', 
+                        color=colors[drop_rate], linewidth=2.5)
+    
+    ax1.set_xlabel('Round di Addestramento', fontsize=12, fontweight='semibold')
+    ax1.set_ylabel('Accuracy', fontsize=12, fontweight='semibold')
+    ax1.set_title('Evoluzione dell\'Accuracy durante l\'Addestramento', fontsize=14, fontweight='bold')
+    ax1.legend(loc='lower right', frameon=True, shadow=True, fontsize=10)
+    ax1.grid(True, alpha=0.3, linestyle='--')
+    ax1.set_ylim([0.60, 0.82])
+    
+    # Plot 2: Accuracy finale vs drop rate con trend line
+    ax2 = axes[0, 1]
+    drop_rates = list(results.keys())
+    final_accuracies = [data['final_metrics']['accuracy'] if data['final_metrics'] else 0 
+                       for data in results.values()]
+    
+    # Plot principale
+    ax2.plot(drop_rates, final_accuracies, 'o-', linewidth=3, markersize=10, 
+             color='#1976D2', markeredgecolor='white', markeredgewidth=2)
+    
+    # Aggiungi trend polinomiale
+    import numpy as np
+    z = np.polyfit(drop_rates, final_accuracies, 2)
+    p = np.poly1d(z)
+    x_smooth = np.linspace(0, 0.7, 100)
+    ax2.plot(x_smooth, p(x_smooth), '--', alpha=0.5, color='gray', 
+             linewidth=2, label='Trend (polinomiale)')
+    
+    # Aggiungi annotazioni per i punti critici
+    for i, (dr, acc) in enumerate(zip(drop_rates, final_accuracies)):
+        if dr in [0.0, 0.3, 0.7]:  # Annota solo punti chiave
+            ax2.annotate(f'{acc:.3f}', 
+                        xy=(dr, acc), 
+                        xytext=(10, 10 if i < 3 else -15),
+                        textcoords='offset points',
+                        fontsize=10,
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.3),
+                        arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0'))
+    
+    ax2.set_xlabel('Tasso di Perdita Messaggi', fontsize=12, fontweight='semibold')
+    ax2.set_ylabel('Accuracy Finale', fontsize=12, fontweight='semibold')
+    ax2.set_title('Degradazione delle Prestazioni vs Tasso di Perdita', fontsize=14, fontweight='bold')
+    ax2.grid(True, alpha=0.3, linestyle='--')
+    ax2.set_xlim([-0.05, 0.75])
+    ax2.set_ylim([0.64, 0.80])
+    ax2.legend(loc='upper right', frameon=True, shadow=True)
+    
+    # Aggiungi zona critica
+    ax2.axvspan(0.25, 0.35, alpha=0.2, color='red', label='Zona Critica')
+    ax2.text(0.3, 0.65, 'Punto di\nRottura', fontsize=10, ha='center', 
+             style='italic', color='darkred')
+    
+    # Plot 3: Statistiche messaggi con percentuali
+    ax3 = axes[1, 0]
+    sent_messages = [data['sent_messages'] for data in results.values()]
+    failed_messages = [data['failed_messages'] for data in results.values()]
+    
+    x = np.arange(len(drop_rates))
+    width = 0.35
+    
+    bars1 = ax3.bar(x - width/2, sent_messages, width, label='Messaggi Inviati', 
+                    color='#42A5F5', edgecolor='navy', linewidth=1.5, alpha=0.8)
+    bars2 = ax3.bar(x + width/2, failed_messages, width, label='Messaggi Persi', 
+                    color='#EF5350', edgecolor='darkred', linewidth=1.5, alpha=0.8)
+    
+    # Aggiungi valori sopra le barre
+    for bar in bars1:
+        height = bar.get_height()
+        ax3.text(bar.get_x() + bar.get_width()/2., height,
+                f'{int(height):,}',
+                ha='center', va='bottom', fontsize=9)
+    
+    for bar in bars2:
+        height = bar.get_height()
+        if height > 0:
+            ax3.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{int(height):,}',
+                    ha='center', va='bottom', fontsize=9)
+    
+    # Aggiungi percentuale di perdita effettiva
+    for i, (sent, failed) in enumerate(zip(sent_messages, failed_messages)):
+        if sent > 0:
+            perc = (failed / sent) * 100
+            ax3.text(i, max(sent, failed) + 200, f'{perc:.1f}%', 
+                    ha='center', fontsize=9, fontweight='bold', color='darkred')
+    
+    ax3.set_xlabel('Tasso di Perdita Impostato', fontsize=12, fontweight='semibold')
+    ax3.set_ylabel('Numero di Messaggi', fontsize=12, fontweight='semibold')
+    ax3.set_title('Statistiche di Comunicazione', fontsize=14, fontweight='bold')
+    ax3.set_xticks(x)
+    ax3.set_xticklabels([f'{dr:.1%}' for dr in drop_rates])
+    ax3.legend(loc='upper left', frameon=True, shadow=True)
+    ax3.grid(True, alpha=0.3, axis='y', linestyle='--')
+    ax3.set_ylim([0, max(sent_messages) * 1.15])
+    
+    # Plot 4: Metriche multiple finale
+    ax4 = axes[1, 1]
+    
+    metrics_data = {
+        'Accuracy': [data['final_metrics']['accuracy'] if data['final_metrics'] else 0 
+                     for data in results.values()],
+        'F1-Score': [data['final_metrics']['f1'] if data['final_metrics'] else 0 
+                     for data in results.values()],
+        'Precision': [data['final_metrics']['precision'] if data['final_metrics'] else 0 
+                      for data in results.values()],
+        'Recall': [data['final_metrics']['recall'] if data['final_metrics'] else 0 
+                   for data in results.values()]
+    }
+    
+    markers = {'Accuracy': 'o', 'F1-Score': 's', 'Precision': '^', 'Recall': 'D'}
+    colors_metrics = {'Accuracy': '#1976D2', 'F1-Score': '#FFA726', 
+                     'Precision': '#AB47BC', 'Recall': '#26A69A'}
+    
+    for metric, values in metrics_data.items():
+        ax4.plot(drop_rates, values, marker=markers[metric], 
+                linewidth=2.5, markersize=8, 
+                label=metric, color=colors_metrics[metric],
+                markeredgecolor='white', markeredgewidth=1.5, alpha=0.85)
+    
+    ax4.set_xlabel('Tasso di Perdita Messaggi', fontsize=12, fontweight='semibold')
+    ax4.set_ylabel('Valore Metrica', fontsize=12, fontweight='semibold')
+    ax4.set_title('Confronto Metriche di Classificazione', fontsize=14, fontweight='bold')
+    ax4.grid(True, alpha=0.3, linestyle='--')
+    ax4.set_xlim([-0.05, 0.75])
+    ax4.set_ylim([0.50, 0.85])
+    ax4.legend(loc='lower left', frameon=True, shadow=True, ncol=2)
+    
+    # Aggiungi linea di riferimento per random classifier
+    ax4.axhline(y=0.5, color='gray', linestyle=':', linewidth=2, alpha=0.5)
+    ax4.text(0.35, 0.51, 'Random Classifier (50%)', fontsize=9, 
+             ha='center', style='italic', color='gray')
+    
+    # Aggiungi watermark con info esperimento
+    fig.text(0.99, 0.01, 'PENS Algorithm | 20 Nodes | 300 Rounds | Binary Classification', 
+             fontsize=9, ha='right', style='italic', alpha=0.5)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Stampa tabella riassuntiva
+    print("\n" + "="*80)
+    print("TABELLA RIASSUNTIVA DEI RISULTATI")
+    print("="*80)
+    print(f"{'Drop Rate':<12} {'Accuracy':<12} {'F1-Score':<12} {'Msg Inviati':<15} {'Msg Persi':<12}")
+    print("-"*80)
+    
+    for drop_rate in drop_rates:
+        if drop_rate in results and results[drop_rate]['final_metrics']:
+            acc = results[drop_rate]['final_metrics']['accuracy']
+            f1 = results[drop_rate]['final_metrics']['f1']
+            sent = results[drop_rate]['sent_messages']
+            failed = results[drop_rate]['failed_messages']
+            
+            # Colora output in base alle prestazioni
+            if acc >= 0.75:
+                color = '\033[92m'  # Verde
+            elif acc >= 0.70:
+                color = '\033[93m'  # Giallo
+            else:
+                color = '\033[91m'  # Rosso
+            reset = '\033[0m'
+            
+            print(f"{drop_rate:<12.1%} {color}{acc:<12.4f}{reset} {f1:<12.4f} {sent:<15,} {failed:<12,}")
+    
+    print("="*80)
+
+# Usa questa funzione al posto di plot_results
+# plot_results_improved(results)
 
 # Esecuzione principale
 if __name__ == "__main__":
     # Definisci i tassi di perdita da testare
     drop_rates = [0.0, 0.1, 0.2, 0.3, 0.5, 0.7]
     
-    print("="*60)
     print("Studio dell'impatto della perdita di messaggi sull'algoritmo PENS")
-    print("VERSIONE CORRETTA CON FIX APPLICATI")
     print("="*60)
     
     # Esegui esperimenti
@@ -546,11 +688,12 @@ if __name__ == "__main__":
     
     if results:
         # Visualizza risultati
+        # plot_results_improved(results)
         plot_results(results)
         
         # Stampa riepilogo
         print("\n" + "="*60)
-        print("RIEPILOGO RISULTATI (VERSIONE CORRETTA)")
+        print("RIEPILOGO RISULTATI")
         print("="*60)
         for drop_rate in drop_rates:
             if drop_rate in results and results[drop_rate]['final_metrics']:
@@ -558,4 +701,3 @@ if __name__ == "__main__":
                 print(f"  Accuracy finale: {results[drop_rate]['final_metrics']['accuracy']:.4f}")
                 print(f"  F1 Score finale: {results[drop_rate]['final_metrics']['f1']:.4f}")
                 print(f"  Messaggi persi/inviati: {results[drop_rate]['failed_messages']}/{results[drop_rate]['sent_messages']}")
-    
