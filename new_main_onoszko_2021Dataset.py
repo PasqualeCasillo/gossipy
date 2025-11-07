@@ -264,7 +264,7 @@ data_handler = ClassificationDataHandler(
 )
 
 # FIX: Parametri PENS ottimizzati
-N_NODES = 5
+N_NODES = 10
 
 # Creazione del data dispatcher con eval_on_user=True per avere test set locali
 data_dispatcher = CustomDataDispatcher(
@@ -275,8 +275,8 @@ data_dispatcher = CustomDataDispatcher(
 )
 
 # PARAMETRI OTTIMIZZATI PER PENS
-N_SAMPLED = 4
-M_TOP = 2
+N_SAMPLED = 10
+M_TOP = 3
 STEP1_ROUNDS = 100
 
 print(f"\n{'='*60}")
@@ -318,7 +318,7 @@ simulator = GossipSimulator(
     data_dispatcher=data_dispatcher,
     delta=100,
     protocol=AntiEntropyProtocol.PUSH,
-    sampling_eval=0.2
+    sampling_eval=1
 )
 
 # Report della simulazione con logging corretto
@@ -340,12 +340,12 @@ print("Rounds: 200 (100 per fase)")
 print(f"Fase 1: Selezione dei migliori vicini (round 0-{STEP1_ROUNDS-1})")
 print(f"Fase 2: Comunicazione ottimizzata (round {STEP1_ROUNDS}-199)")
 print(f"FIX APPLICATI:")
-print(f"  ✓ Valutazione su test set in Fase 1")
-print(f"  ✓ Logging corretto dei round numbers")
-print(f"  ✓ Test set locale per ogni nodo")
+print(f"   Valutazione su test set in Fase 1")
+print(f"   Logging corretto dei round numbers")
+print(f"   Test set locale per ogni nodo")
 print("="*60 + "\n")
 
-simulator.start(n_rounds=200)
+simulator.start(n_rounds=400)
 
 # Visualizzazione dei risultati
 print("\n" + "="*60)
