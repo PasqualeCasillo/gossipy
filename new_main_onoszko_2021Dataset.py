@@ -82,7 +82,6 @@ class CustomDataDispatcher(DataDispatcher):
                     self.te_assignments[idx] = list(range(i, min(i + eval_ex_x_user, n_eval_ex)))
 
 
-# FIX per il bug roc_auc_score
 from sklearn.metrics import accuracy_score, roc_auc_score, recall_score, f1_score, precision_score
 from gossipy import GlobalSettings
 
@@ -128,9 +127,6 @@ class FixedPENSNode(PENSNode):
     """PENSNode con correzione del bug di valutazione in Fase 1"""
     
     def receive(self, t: int, msg: Message) -> Union[Message, None]:
-        """
-        FIX BUG CRITICO: Valuta i modelli ricevuti sul TEST SET, non sul training set
-        """
         from gossipy import LOG
         
         msg_type: MessageType
@@ -142,7 +138,6 @@ class FixedPENSNode(PENSNode):
             return None
 
         if self.step == 1:
-            # FIX CRITICO: Usa self.data[1] (test set) invece di self.data[0] (training set)
             if self.data[1] is not None:
                 evaluation = CACHE[recv_model].evaluate(self.data[1])  # ← FIX!
             else:
@@ -277,7 +272,7 @@ data_dispatcher = CustomDataDispatcher(
 # PARAMETRI OTTIMIZZATI PER PENS
 N_SAMPLED = 10
 M_TOP = 3
-STEP1_ROUNDS = 100
+STEP1_ROUNDS = 50
 
 print(f"\n{'='*60}")
 print(f"PARAMETRI PENS:")
@@ -303,7 +298,7 @@ nodes = FixedPENSNode.generate(  # ← USA FixedPENSNode
         criterion=F.cross_entropy,
         create_model_mode=CreateModelMode.MERGE_UPDATE,
         batch_size=32,
-        local_epochs=3
+        local_epochs=4
     ),
     round_len=100,
     sync=False,
@@ -336,16 +331,14 @@ print("AVVIO DELLA SIMULAZIONE PENS (VERSIONE CORRETTA)")
 print("="*60)
 print("Protocollo: PUSH")
 print(f"Nodi: {N_NODES}")
-print("Rounds: 200 (100 per fase)")
-print(f"Fase 1: Selezione dei migliori vicini (round 0-{STEP1_ROUNDS-1})")
-print(f"Fase 2: Comunicazione ottimizzata (round {STEP1_ROUNDS}-199)")
-print(f"FIX APPLICATI:")
+print(f"Fase 1: Selezione dei migliori vicini")
+print(f"Fase 2: Comunicazione ottimizzata")
 print(f"   Valutazione su test set in Fase 1")
 print(f"   Logging corretto dei round numbers")
 print(f"   Test set locale per ogni nodo")
 print("="*60 + "\n")
 
-simulator.start(n_rounds=400)
+simulator.start(n_rounds=500)
 
 # Visualizzazione dei risultati
 print("\n" + "="*60)
@@ -386,13 +379,9 @@ if final_results:
 
 plot_evaluation(
     [[ev for _, ev in report.get_evaluation(False)]], 
-    "Overall test results - PENS FIXED with Data1.csv"
+    "Overall test results"
 )
 
-
-# ============================================================================
-# FIX IMPRECISIONE #2: Calcolo corretto train/test accuracy comparabili
-# ============================================================================
 print("\n" + "="*60)
 print(" ANALISI OVERFITTING/UNDERFITTING (VERSIONE CORRETTA)")
 print("="*60)
@@ -441,17 +430,17 @@ print(f"  Gap:            {avg_local_train_acc - avg_local_test_acc:.4f}")
 # Diagnosi basata sul gap GLOBALE (corretto)
 print(f"\n Diagnosi (basata su metriche GLOBALI):")
 if global_gap < 0.02:
-    print(" ✓ GOOD FIT: Il modello generalizza bene!")
+    print(" GOOD FIT: Il modello generalizza bene!")
 elif global_gap < 0.10:
-    print("  ⚠ LEGGERO OVERFITTING: Accettabile ma monitorare")
+    print("   LEGGERO OVERFITTING: Accettabile ma monitorare")
 elif global_gap >= 0.10:
-    print("  ✗ OVERFITTING: Il modello memorizza il training set!")
+    print("   OVERFITTING: Il modello memorizza il training set!")
     print("     Suggerimenti:")
     print("     - Aumenta dropout (da 0.2 a 0.3-0.4)")
     print("     - Aumenta weight_decay (da 0.0001 a 0.001)")
     print("     - Riduci complessità modello")
 else:
-    print("  ✗ UNDERFITTING: Il modello è troppo semplice!")
+    print("   UNDERFITTING: Il modello è troppo semplice!")
     print("     Suggerimenti:")
     print("     - Aumenta complessità (più layer/neuroni)")
     print("     - Aumenta local_epochs")
@@ -465,3 +454,187 @@ print(f"\n Statistiche per nodo:")
 print(f"  Train Accuracy: min={min(local_train_accs):.4f}, max={max(local_train_accs):.4f}, std={np.std(local_train_accs):.4f}")
 if local_test_accs:
     print(f"  Test Accuracy:  min={min(local_test_accs):.4f}, max={max(local_test_accs):.4f}, std={np.std(local_test_accs):.4f}")
+
+
+# ============================================================================
+# CONFUSION MATRIX - ANALISI DETTAGLIATA
+# ============================================================================
+print("\n" + "="*60)
+print(" CONFUSION MATRIX E METRICHE PER CLASSE")
+print("="*60)
+
+from sklearn.metrics import confusion_matrix, classification_report
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# 1. CONFUSION MATRIX GLOBALE (test set completo)
+print("\n[1] CONFUSION MATRIX GLOBALE (Test Set Completo)")
+print("-" * 60)
+
+sample_node = nodes[0]
+sample_node.model_handler.model.eval()
+
+# Predizioni su test set completo
+with torch.no_grad():
+    X_test_device = X_test.to(sample_node.model_handler.device)
+    y_pred_scores = sample_node.model_handler.model(X_test_device)
+    y_pred = torch.argmax(y_pred_scores, dim=-1).cpu().numpy()
+
+y_true = y_test.numpy()
+
+# Calcola confusion matrix
+cm_global = confusion_matrix(y_true, y_pred)
+
+print("\nConfusion Matrix (valori assoluti):")
+print(f"                 Predicted")
+print(f"                 Attack Normal")
+print(f"Actual Normal    {cm_global[0,0]:6d}  {cm_global[0,1]:6d}")
+print(f"Actual Attack    {cm_global[1,0]:6d}  {cm_global[1,1]:6d}")
+
+# Confusion matrix normalizzata per riga (recall per classe)
+cm_normalized = cm_global.astype('float') / cm_global.sum(axis=1)[:, np.newaxis]
+
+print("\nConfusion Matrix (normalizzata per riga):")
+print(f"                 Predicted")
+print(f"                 Attack Normal")
+print(f"Actual Attack    {cm_normalized[0,0]:.3f}   {cm_normalized[0,1]:.3f}")
+print(f"Actual Normal    {cm_normalized[1,0]:.3f}   {cm_normalized[1,1]:.3f}")
+
+# Classification report dettagliato
+print("\nClassification Report:")
+print("-" * 60)
+target_names = ['Attack', 'Normal']
+print(classification_report(y_true, y_pred, target_names=target_names, digits=4))
+
+# Visualizzazione grafica confusion matrix
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+# Confusion matrix assoluta
+sns.heatmap(cm_global, annot=True, fmt='d', cmap='Blues', 
+            xticklabels=target_names, yticklabels=target_names,
+            ax=axes[0], cbar_kws={'label': 'Count'})
+axes[0].set_title('Confusion Matrix - Valori Assoluti')
+axes[0].set_ylabel('True Label')
+axes[0].set_xlabel('Predicted Label')
+
+# Confusion matrix normalizzata
+sns.heatmap(cm_normalized, annot=True, fmt='.3f', cmap='Blues',
+            xticklabels=target_names, yticklabels=target_names,
+            ax=axes[1], cbar_kws={'label': 'Proportion'})
+axes[1].set_title('Confusion Matrix - Normalizzata')
+axes[1].set_ylabel('True Label')
+axes[1].set_xlabel('Predicted Label')
+
+plt.tight_layout()
+plt.savefig('confusion_matrix_pens.png', dpi=300, bbox_inches='tight')
+print("\n Confusion matrix salvata in: confusion_matrix_pens.png")
+plt.show()
+
+# ============================================================================
+# TRAINING E EVALUATION LOSS - ANALISI CONVERGENZA
+# ============================================================================
+print("\n" + "="*60)
+print(" TRAINING E EVALUATION LOSS")
+print("="*60)
+
+import matplotlib.pyplot as plt
+
+# Estrai le metriche dai report
+eval_results = report.get_evaluation(False)  # Metriche globali (test)
+
+if eval_results:
+    rounds = [r for r, _ in eval_results]
+    
+    # Estrai le metriche disponibili
+    accuracies = [ev.get('accuracy', 0) for _, ev in eval_results]
+    
+    # Calcola la loss dal complemento dell'accuracy (approssimazione)
+    # In alternativa, se hai salvato la loss direttamente, usala
+    eval_losses = [1 - acc for acc in accuracies]  # Loss approssimata
+    
+    # Plot Training Loss e Evaluation Loss
+    fig, axes = plt.subplots(2, 1, figsize=(12, 10))
+    
+    # Plot 1: Accuracy nel tempo
+    axes[0].plot(rounds, accuracies, 'b-', linewidth=2, label='Test Accuracy')
+    axes[0].axhline(y=baseline_accuracy, color='r', linestyle='--', 
+                    label=f'Baseline: {baseline_accuracy:.4f}', linewidth=1.5)
+    axes[0].axvline(x=STEP1_ROUNDS, color='gray', linestyle=':', 
+                    label=f'Fase 1→2 (Round {STEP1_ROUNDS})', linewidth=1.5)
+    axes[0].set_xlabel('Round', fontsize=12)
+    axes[0].set_ylabel('Accuracy', fontsize=12)
+    axes[0].set_title('Test Accuracy durante Training PENS', fontsize=14, fontweight='bold')
+    axes[0].legend(loc='lower right', fontsize=10)
+    axes[0].grid(True, alpha=0.3)
+    axes[0].set_xlim([0, max(rounds)])
+    axes[0].set_ylim([0, 1])
+    
+    # Plot 2: Loss nel tempo (approssimata da 1-accuracy)
+    axes[1].plot(rounds, eval_losses, 'r-', linewidth=2, label='Evaluation Loss (1-accuracy)')
+    axes[1].axvline(x=STEP1_ROUNDS, color='gray', linestyle=':', 
+                    label=f'Fase 1→2 (Round {STEP1_ROUNDS})', linewidth=1.5)
+    axes[1].set_xlabel('Round', fontsize=12)
+    axes[1].set_ylabel('Loss', fontsize=12)
+    axes[1].set_title('Evaluation Loss durante Training PENS', fontsize=14, fontweight='bold')
+    axes[1].legend(loc='upper right', fontsize=10)
+    axes[1].grid(True, alpha=0.3)
+    axes[1].set_xlim([0, max(rounds)])
+    
+    plt.tight_layout()
+    plt.savefig('training_evaluation_loss.png', dpi=300, bbox_inches='tight')
+    print("\n Grafico loss salvato in: training_evaluation_loss.png")
+    plt.show()
+    
+    # Statistiche sulla convergenza
+    print("\n Convergenza]")
+    print("-" * 60)
+    
+    # Fase 1 vs Fase 2
+    phase1_accs = accuracies[:STEP1_ROUNDS]
+    phase2_accs = accuracies[STEP1_ROUNDS:]
+    
+    print(f"\nFase 1 (Discovery - Rounds 0-{STEP1_ROUNDS-1}):")
+    print(f"  Accuracy iniziale: {phase1_accs[0]:.4f}")
+    print(f"  Accuracy finale:   {phase1_accs[-1]:.4f}")
+    print(f"  Miglioramento:     {(phase1_accs[-1] - phase1_accs[0]):.4f}")
+    print(f"  Media:             {np.mean(phase1_accs):.4f}")
+    print(f"  Std Dev:           {np.std(phase1_accs):.4f}")
+    
+    print(f"\nFase 2 (Optimized - Rounds {STEP1_ROUNDS}-{max(rounds)}):")
+    print(f"  Accuracy iniziale: {phase2_accs[0]:.4f}")
+    print(f"  Accuracy finale:   {phase2_accs[-1]:.4f}")
+    print(f"  Miglioramento:     {(phase2_accs[-1] - phase2_accs[0]):.4f}")
+    print(f"  Media:             {np.mean(phase2_accs):.4f}")
+    print(f"  Std Dev:           {np.std(phase2_accs):.4f}")
+    
+    # Stabilità della convergenza (ultimi 50 rounds)
+    last_50_accs = accuracies[-50:]
+    convergence_std = np.std(last_50_accs)
+    
+    print(f"\nStabilità (ultimi 50 rounds):")
+    print(f"  Std Dev: {convergence_std:.4f}")
+    
+    if convergence_std < 0.01:
+        print("   CONVERGENZA STABILE (varianza molto bassa)")
+    elif convergence_std < 0.03:
+        print("   CONVERGENZA MODERATA (leggere oscillazioni)")
+    else:
+        print("   CONVERGENZA INSTABILE (oscillazioni significative)")
+    
+    # Velocità di convergenza
+    halfway_round = len(accuracies) // 2
+    halfway_acc = accuracies[halfway_round]
+    final_acc = accuracies[-1]
+    
+    print(f"\nVelocità convergenza:")
+    print(f"  Accuracy a metà training (round {rounds[halfway_round]}): {halfway_acc:.4f}")
+    print(f"  Accuracy finale (round {rounds[-1]}):                     {final_acc:.4f}")
+    print(f"  Miglioramento seconda metà:                               {(final_acc - halfway_acc):.4f}")
+    
+    if (final_acc - halfway_acc) < 0.01:
+        print("  → Convergenza raggiunta presto (plateau)")
+    else:
+        print("  → Convergenza ancora in progresso")
+
+else:
+    print(" Nessun dato di evaluation disponibile")
