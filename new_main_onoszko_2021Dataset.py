@@ -313,7 +313,8 @@ simulator = GossipSimulator(
     data_dispatcher=data_dispatcher,
     delta=100,
     protocol=AntiEntropyProtocol.PUSH,
-    sampling_eval=1
+    sampling_eval=1,
+    # drop_prob=1
 )
 
 # Report della simulazione con logging corretto

@@ -40,7 +40,7 @@ class Data1Net(TorchModel):
         for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
             layers.append(nn.ReLU())
-            layers.append(nn.Dropout(0.2))
+            layers.append(nn.Dropout(0.4))
             prev_dim = hidden_dim
         
         # Layer di output per classificazione binaria
@@ -539,14 +539,14 @@ nodes = FixedPENSNode.generate(
         optimizer=torch.optim.Adam,
         optimizer_params={
             "lr": 0.001,
-            "weight_decay": 0.0001
+            "weight_decay": 0.001
         },
         criterion=F.cross_entropy,
         create_model_mode=CreateModelMode.MERGE_UPDATE,
         batch_size=32,
-        local_epochs=3
+        local_epochs=2
     ),
-    round_len=100,
+    round_len=50,
     sync=False,
     n_sampled=N_SAMPLED,
     m_top=M_TOP,
@@ -561,7 +561,7 @@ nodes = FixedPENSNode.generate(
 simulator = DivergenceTrackingSimulator(
     nodes=nodes,
     data_dispatcher=data_dispatcher,
-    delta=100,
+    delta=50,
     protocol=AntiEntropyProtocol.PUSH,
     sampling_eval=1
 )
@@ -623,9 +623,7 @@ plot_evaluation(
     "Overall test results - PENS with Divergence Tracking (Data1.csv)"
 )
 
-# ============================================================================
 # ANALISI OVERFITTING/UNDERFITTING
-# ============================================================================
 
 print("\n" + "="*60)
 print(" ANALISI OVERFITTING/UNDERFITTING")
@@ -674,11 +672,11 @@ print(f"  Gap:            {avg_local_train_acc - avg_local_test_acc:.4f}")
 # Diagnosi
 print(f"\n Diagnosi (basata su metriche GLOBALI):")
 if global_gap < 0.02:
-    print(" ✓ GOOD FIT: Il modello generalizza bene!")
+    print("  GOOD FIT: Il modello generalizza bene!")
 elif global_gap < 0.10:
-    print("  ⚠ LEGGERO OVERFITTING: Accettabile ma monitorare")
+    print("   LEGGERO OVERFITTING: Accettabile ma monitorare")
 elif global_gap >= 0.10:
-    print("  ✗ OVERFITTING: Il modello memorizza il training set!")
+    print("   OVERFITTING: Il modello memorizza il training set!")
     print("     Suggerimenti:")
     print("     - Aumenta dropout (da 0.2 a 0.3-0.4)")
     print("     - Aumenta weight_decay (da 0.0001 a 0.001)")
@@ -691,7 +689,7 @@ else:
     print("     - Riduci regolarizzazione")
 
 if global_train_acc < 0.85:
-    print("\n  ℹ Train accuracy bassa → modello potrebbe essere sottopotente")
+    print("\n  Train accuracy bassa → modello potrebbe essere sottopotente")
 
 # Statistiche dettagliate per nodo
 print(f"\n Statistiche per nodo:")
@@ -699,9 +697,6 @@ print(f"  Train Accuracy: min={min(local_train_accs):.4f}, max={max(local_train_
 if local_test_accs:
     print(f"  Test Accuracy:  min={min(local_test_accs):.4f}, max={max(local_test_accs):.4f}, std={np.std(local_test_accs):.4f}")
 
-# ============================================================================
-# SALVATAGGIO DATI DIVERGENZA
-# ============================================================================
 
 print(f"\n{'='*60}")
 print(f"Saving divergence data...")

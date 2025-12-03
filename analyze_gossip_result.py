@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from divergence_metrics import jensen_renyi_divergence, kl_from_raw_weights, js_from_raw_weights
 import seaborn as sns
 
-def load_gossip_data(filename="gossip_divergence_data.pkl"):
+def load_gossip_data(filename="pens_divergence_data_data1.pkl"):
     """Carica i dati salvati dal Gossip Learning"""
     try:
         with open(filename, "rb") as f:
